@@ -1,0 +1,232 @@
+###############################################################
+# Single-cell RNA-seq: Subclustering
+# Author: Deeksha Sharma (revised)
+# Purpose: Subset endothelial cells, clean, run SCTransform/PCA/UMAP,
+#          identify cluster markers, visualize top markers, and prepare
+#          for pathway enrichment.
+###############################################################
+
+## -----------------------------------------------------------------
+## 0. Notes
+## - Save checkpoints after major steps (raw -> SCTransformed -> clustering).
+## - Adjust parameters (min.pct, logfc.threshold, resolution, PCA dims)
+##   based on data characteristics and downstream sensitivity.
+## -----------------------------------------------------------------
+
+## -----------------------------------------------------------------
+## 1. Load required libraries (grouped & deduplicated)
+## -----------------------------------------------------------------
+library(Seurat)
+library(SeuratObject)
+library(dplyr)
+library(tidyr)
+library(ggplot2)
+library(ggrepel)
+library(patchwork)
+library(ggpubr)
+library(cowplot)
+library(pheatmap)
+library(Nebulosa)
+library(monocle3)
+library(CellChat)
+library(clusterProfiler)
+library(org.Mm.eg.db)  # mouse gene annotation; change if human
+library(fgsea)
+library(openxlsx)
+library(scCATCH)
+library(enrichR)
+library(glmGamPoi)
+library(DOSE)
+library(ggridges)
+library(future)
+
+## -----------------------------------------------------------------
+## 2. Load base object & inspect
+## -----------------------------------------------------------------
+# Path to your main annotated Seurat object
+base_rds <- "8-Annotated-object.RDS"
+if (!file.exists(base_rds)) stop("Base RDS not found: ", base_rds)
+
+obj <- readRDS(base_rds)
+cat("✅ Object loaded: ", ncol(obj), "cells across", length(unique(Idents(obj))), "clusters.\n")
+
+# Basic inspections
+table(Idents(obj))
+head(obj@meta.data)
+dim(obj)
+
+## -----------------------------------------------------------------
+## 3. Subset endothelial cells (two options: by identity or by loading a pre-saved subset)
+## -----------------------------------------------------------------
+# Option A: subset by cluster identity name (uncomment if cluster named "Endothelial")
+# Endothelial <- subset(obj, idents = "Endothelial")
+
+# Option B: load a previously saved endothelial subset if available
+endothelial_rds <- "Endothelial_cells_obj.rds"
+if (file.exists(endothelial_rds)) {
+  Endothelial <- readRDS(endothelial_rds)
+  cat("✅ Loaded pre-saved endothelial object from", endothelial_rds, "\n")
+} else {
+  # If no pre-saved file, try option A and then save
+  if ("Endothelial" %in% levels(Idents(obj))) {
+    Endothelial <- subset(obj, idents = "Endothelial")
+    saveRDS(Endothelial, file = endothelial_rds)
+    cat("✅ Subsetted 'Endothelial' from base object and saved to", endothelial_rds, "\n")
+  } else {
+    stop("No pre-saved endothelial object and 'Endothelial' identity not found in Idents(obj).")
+  }
+}
+
+# Quick checks
+Endothelial
+head(Endothelial@meta.data)
+ncol(Endothelial)
+length(Cells(Endothelial))
+
+## -----------------------------------------------------------------
+## 4. Basic QC: check contamination (immune / epithelial markers) and remove flagged cells
+## -----------------------------------------------------------------
+# Example marker checks (mouse gene names assumed). Adjust thresholds to your data.
+# Check Ptprc (Cd45) positive immune cells
+ptprc_pos <- subset(Endothelial, subset = Ptprc > 0)
+cat("Cells Ptprc > 0:", ncol(ptprc_pos), "\n")
+
+# Check epithelial/tumor marker expression (Krt18). Threshold is dataset-dependent.
+krt18_pos <- subset(Endothelial, subset = Krt18 > 1.5)
+cat("Cells Krt18 > 1.5:", ncol(krt18_pos), "\n")
+
+# Remove contaminating cells: keep cells with Krt18 <= 1.5 AND Ptprc == 0
+Endothelial_clean <- subset(Endothelial, subset = (Krt18 <= 1.5) & (Ptprc == 0))
+cat("After cleaning, cells:", ncol(Endothelial_clean), "\n")
+
+# Overwrite and save cleaned object
+Endothelial <- Endothelial_clean
+saveRDS(Endothelial, file = "Endothelial_cleaned.rds")
+cat("✅ Saved cleaned endothelial object to 'Endothelial_cleaned.rds'\n")
+
+## -----------------------------------------------------------------
+## 5. Normalization, variable features, PCA, UMAP, clustering
+##    (using SCTransform pipeline)
+## -----------------------------------------------------------------
+# Use SCTransform, regress percent.mt if present
+if (!"percent.mt" %in% colnames(Endothelial@meta.data)) {
+  # compute percent.mt if not present (assumes mitochondrial genes start with "mt-"/"MT-"; adjust)
+  Endothelial[["percent.mt"]] <- PercentageFeatureSet(Endothelial, pattern = "^mt-")
+}
+
+Endothelial <- SCTransform(Endothelial, vars.to.regress = "percent.mt", verbose = FALSE)
+saveRDS(Endothelial, file = "1-SCtransform-Endothelial.RDS")
+cat("✅ SCTransform completed and saved to '1-SCtransform-Endothelial.RDS'\n")
+
+# PCA
+Endothelial <- RunPCA(Endothelial, verbose = FALSE)
+ElbowPlot(Endothelial)  # inspect how many PCs to use
+
+# By default we used 20 PCs; tune dims based on ElbowPlot
+pcs_to_use <- 1:20
+
+Endothelial <- RunUMAP(Endothelial, dims = pcs_to_use, verbose = FALSE)
+Endothelial <- FindNeighbors(Endothelial, dims = pcs_to_use, verbose = FALSE)
+resolution_value <- 0.4
+Endothelial <- FindClusters(Endothelial, resolution = resolution_value, verbose = FALSE)
+
+# Visualize UMAPs
+p1 <- DimPlot(Endothelial, reduction = "umap", label = TRUE) + ggtitle("UMAP: clusters")
+p2 <- DimPlot(Endothelial, reduction = "umap", group.by = "treatment", label = FALSE) + ggtitle("UMAP: treatment")
+p3 <- DimPlot(Endothelial, reduction = "umap", group.by = "cell.line", label = FALSE) + ggtitle("UMAP: cell.line")
+
+(p1 | p2) / p3
+
+# Save the updated Seurat object (clusters, UMAP, etc.)
+saveRDS(Endothelial, file = "Endothelial_Final_Metadata_UMAP_Scores.rds")
+cat("✅ Final object saved to 'Endothelial_Final_Metadata_UMAP_Scores.rds'\n")
+
+## -----------------------------------------------------------------
+## 6. Marker detection (unbiased) and visualization
+## -----------------------------------------------------------------
+# Load final object (safety)
+Endothelial <- readRDS("Endothelial_Final_Metadata_UMAP_Scores.rds")
+
+# Find cluster markers: only.pos = TRUE keeps markers up in the cluster
+all_markers <- FindAllMarkers(
+  object = Endothelial,
+  only.pos = TRUE,
+  min.pct = 0.25,
+  logfc.threshold = 0.25
+)
+
+# Inspect top markers per cluster
+markers_by_cluster <- split(all_markers, all_markers$cluster)
+for (cluster in names(markers_by_cluster)) {
+  cat("\nTop markers for Cluster", cluster, ":\n")
+  print(head(markers_by_cluster[[cluster]], n = 6))
+}
+
+# Extract top N markers per cluster (here top 5 by adjusted p-value)
+top_markers <- lapply(markers_by_cluster, function(df) head(df[order(df$p_val_adj), ], 5))
+top_marker_genes <- unique(unlist(lapply(top_markers, function(df) df$gene)))
+
+# DotPlot of top markers
+DotPlot(Endothelial, features = top_marker_genes) +
+  ggtitle("Dot Plot of top markers (top 5 per cluster)") +
+  theme(axis.text.x = element_text(angle = 45, hjust = 1),
+        axis.title = element_text(size = 14),
+        legend.title = element_text(size = 12),
+        legend.text = element_text(size = 10))
+
+# Average expression matrix for the chosen assay (SCT if SCTransform used)
+avg_expr_list <- AverageExpression(Endothelial, features = top_marker_genes, group.by = "seurat_clusters", return.seurat = FALSE)
+# If SCT is present, use avg_expr_list$SCT; otherwise inspect the list
+if ("SCT" %in% names(avg_expr_list)) {
+  avg_matrix <- avg_expr_list$SCT
+} else if ("RNA" %in% names(avg_expr_list)) {
+  avg_matrix <- avg_expr_list$RNA
+} else {
+  # fallback: use the first element
+  avg_matrix <- avg_expr_list[[1]]
+}
+
+# Heatmap: clustered (rows = genes, cols = clusters)
+pheatmap::pheatmap(
+  avg_matrix,
+  scale = "row",
+  clustering_distance_rows = "euclidean",
+  clustering_distance_cols = "euclidean",
+  clustering_method = "complete",
+  fontsize_row = 8,
+  show_rownames = TRUE,
+  show_colnames = TRUE
+)
+
+# Heatmap: non-clustered (presentation)
+pheatmap(
+  avg_matrix,
+  scale = "row",
+  cluster_rows = FALSE,
+  cluster_cols = FALSE,
+  show_rownames = TRUE,
+  show_colnames = TRUE,
+  border_color = NA
+)
+
+## -----------------------------------------------------------------
+## 7. Next steps: differential expression (DEG) & pathway enrichment
+## -----------------------------------------------------------------
+# Example DEG between two groups (adjust group.by and identities):
+# e.g., Find markers between treatment A vs B in cluster X or across all endothelial cells
+# cluster_of_interest <- "0"
+# Idents(Endothelial) <- "seurat_clusters"
+# deg_cluster0 <- FindMarkers(Endothelial, ident.1 = "treated", ident.2 = "control", subset.ident = cluster_of_interest, logfc.threshold = 0.25, min.pct = 0.1)
+
+# For pathway analysis:
+# - convert gene symbols to Entrez IDs (if using clusterProfiler/org.Mm.eg.db)
+# - use enricher() or gseGO()/fgsea depending on whether you run ranked lists or gene sets.
+
+# Example (basic) enrichment workflow outline:
+# library(clusterProfiler)
+# gene_list <- deg_cluster0$avg_log2FC
+# names(gene_list) <- deg_cluster0$gene
+# gene_list_sorted <- sort(gene_list, decreasing = TRUE)
+# gsea_res <- fgsea::fgsea(pathways = my_pathways, stats = gene_list_sorted, nperm = 1000)
+
+cat("✅ Script finished. Next: run DEG (FindMarkers) for contrasts of interest and use clusterProfiler/fgsea for enrichment.\n")
