@@ -1,0 +1,226 @@
+###############################################################
+# 📘 Single-cell RNA-seq Cluster Annotation & Marker Exploration
+# Author: Deeksha Sharma
+# Purpose: Identify cluster identities using canonical markers,
+# visualize key gene expression patterns, and compare across clusters.
+###############################################################
+
+##--------------------------------------------------------------
+## 1. Load Required Libraries
+##--------------------------------------------------------------
+
+# Core utilities and visualization
+library(dplyr)
+library(tidyverse)
+library(ggplot2)
+library(ggrepel)
+library(patchwork)
+library(ggpubr)
+library(cowplot)
+
+# Seurat framework
+library(Seurat)
+library(SeuratObject)
+
+# Optional downstream tools
+library(Nebulosa)
+library(monocle3)
+library(CellChat)
+
+##--------------------------------------------------------------
+## 2. Load Processed UMAP Object
+##--------------------------------------------------------------
+
+obj <- readRDS("6-UMAP-object.RDS")
+cat("✅ UMAP object loaded successfully with", ncol(obj), "cells.\n")
+
+##--------------------------------------------------------------
+## 3. Assign or Explore Cluster Identities
+##--------------------------------------------------------------
+# Multiple strategies can be used:
+# 1️⃣ Compare expression of canonical markers (from literature)
+# 2️⃣ Subcluster specific cell populations (T cells, myeloid, fibroblasts, etc.)
+# 3️⃣ Integrate pathway or signature-based annotation later (SingleR, scType, etc.)
+
+# Below are canonical examples for broad cell classes (mouse — adjust symbols for human)
+
+##--------------------------------------------------------------
+## 4. Visualize Canonical Markers
+##--------------------------------------------------------------
+
+# Example: Violin plots for major lineages
+VlnPlot(obj, features = c("Adipoq", "Fabp4", "Plin1")) + ggtitle("Adipocytes")
+VlnPlot(obj, features = c("Acta2", "Col5a1")) + ggtitle("Fibroblasts")
+VlnPlot(obj, features = c("Cd3g", "Cd3e")) + ggtitle("T Cells")
+VlnPlot(obj, features = c("Cd68", "Itgam", "Mrc1", "Adgre1")) + ggtitle("Myeloid Cells")
+
+##--------------------------------------------------------------
+## 5. Define Marker Panels
+##--------------------------------------------------------------
+
+# Core biased markers used to distinguish major cell types
+Biased_markers <- c(
+  "Krt18", "Twist1", "Myc",                       # Tumor / epithelial
+  "Acta2", "Tnc", "Col12a1",                      # Fibroblasts
+  "Adgre1", "Msr1", "Arg1",                       # Macrophage / M2
+  "Itgax", "H2-Ab1", "H2-Eb1",                    # DCs / APCs
+  "Cd163", "Mrc1", "Cd68", "Itgam",               # Myeloid
+  "Pecam1", "Eng", "Cdh5",                        # Endothelial
+  "Cd3d", "Cd3e", "Cd8b1",                        # T cells
+  "Jchain", "Igkc"                                # B cells / plasma
+)
+
+DotPlot(obj, features = Biased_markers) +
+  theme(axis.text.x = element_text(angle = 45, hjust = 1)) +
+  ggtitle("Canonical Markers Across Clusters")
+
+##--------------------------------------------------------------
+## 6. Explore Specific Populations
+##--------------------------------------------------------------
+
+### Tumor cells
+tumor_genes <- c("Epcam", "Krt8", "Krt18", "Cdh1", "Muc1", "Erbb2", "Egfr", 
+                 "Sox2", "Cd44", "Prom1", "Trp53", "Myc", "Mki67", "Pcna", "Snai1", "Fn1")
+FeaturePlot(obj, features = tumor_genes, reduction = "umap", combine = FALSE)
+
+### Immune cells
+immune_genes <- c("Ptprc", "Cd3e", "Cd3g", "Cd8a", "Cd19", "Ms4a1", "Ncr1", "Nkg7", 
+                  "Gzmb", "Prf1", "Adgre1", "Itgam", "Itgax", "Cd68", "Mrc1", "Cd163",
+                  "C1qa", "C1qb", "H2-Ab1", "S100a8", "S100a9", "Ly6g")
+FeaturePlot(obj, features = immune_genes, reduction = "umap", combine = FALSE)
+
+### Fibroblasts
+fibro_genes <- c("Vim", "Pdgfra", "Pdgfrb", "Fap", "Acta2", "Thy1", "Lum", 
+                 "Col3a1", "Col5a1", "Fn1", "Col6a2", "Fbn1", "Postn")
+FeaturePlot(obj, features = fibro_genes, reduction = "umap", combine = FALSE)
+
+### Endothelial cells
+endo_genes <- c("Pecam1", "Cdh5", "Kdr", "Flt1", "Eng", "Egfl7")
+FeaturePlot(obj, features = endo_genes, reduction = "umap", combine = FALSE)
+
+### Adipocytes
+adipo_genes <- c("Adipoq", "Lep", "Plin1", "Apoe", "Pparg")
+FeaturePlot(obj, features = adipo_genes, reduction = "umap", combine = FALSE)
+
+### Cancer stem-like cells
+csc_genes <- c("Sox9", "Aldh1a1", "Prom1", "Twist1", "Nanog", "Klf4", "Zeb1")
+FeaturePlot(obj, features = csc_genes, reduction = "umap", combine = FALSE)
+
+### Myeloid & Lymphoid subsets
+myeloid_genes <- c("Csf1r", "Mpeg1")
+lymphoid_genes <- c("Arhgap45", "Gimap4", "Gimap3", "Acap1", "Ighm", "Igkc")
+FeaturePlot(obj, features = c(myeloid_genes, lymphoid_genes), reduction = "umap", combine = FALSE)
+
+##--------------------------------------------------------------
+## 7. Dot Plot of All Marker Sets
+##--------------------------------------------------------------
+
+genes_of_interest <- c(
+  tumor_genes, immune_genes, fibro_genes, endo_genes, adipo_genes,
+  csc_genes, myeloid_genes, lymphoid_genes
+)
+
+dotplot <- DotPlot(obj, features = genes_of_interest) +
+  theme(axis.text.x = element_text(angle = 90, hjust = 1)) +
+  ggtitle("Dot Plot of Key Cell-Type Markers")
+
+# Save the DotPlot
+ggsave("DotPlot_all_genes.png", plot = dotplot, width = 10, height = 12)
+cat("✅ Dot plot saved as 'DotPlot_all_genes.png'\n")
+
+##--------------------------------------------------------------
+## 8. Violin Plots for Selected Genes
+##--------------------------------------------------------------
+
+selected_genes <- c(
+  "Epcam", "Krt8", "Krt18", "Top2a", "Mki67", "Twist1", "Myc", "Krt19",
+  "Ptprc", "Mrc1", "Cd68", "Itgam", "Itgax", "H2-Ab1", "Csf1r", "Postn",
+  "Col3a1", "Fbn1", "Eng", "Cdh5", "Flt1", "Adipoq", "Plin1", "Cd3e",
+  "Cd3g", "Igkc", "Hba-a2", "Hbb-bt"
+)
+
+# Stacked violin plots
+VlnPlot(obj, selected_genes, stack = TRUE, sort = TRUE) +
+  theme(legend.position = "none") +
+  ggtitle("Cluster Identity by Marker Expression")
+
+# Alternative flipped view
+VlnPlot(obj, selected_genes, stack = TRUE, sort = TRUE, flip = TRUE) +
+  theme(legend.position = "none") +
+  ggtitle("Identity on X-axis")
+
+###plus do unbiased markers then use combination of both to annotate you cluster
+# Unbiased Analysis: Cluster-wise DEG Identification
+##--------------------------------------------------------------
+
+# Identify differentially expressed genes (DEGs) for all clusters
+# 'only.pos = TRUE' finds genes upregulated in each cluster
+obj.markers <- FindAllMarkers(
+  obj,
+  only.pos = TRUE,
+  min.pct = 0.25,
+  logfc.threshold = 0.25
+)
+
+# Save DEG results
+write.csv(obj.markers, "7-DEG_all_clusters.csv", row.names = FALSE)
+cat("✅ DEG table saved: 7-DEG_all_clusters.csv\n")
+
+##--------------------------------------------------------------
+## 1. Summarize Top Genes per Cluster
+##--------------------------------------------------------------
+
+# Extract top 10 genes per cluster
+top10 <- obj.markers %>%
+  group_by(cluster) %>%
+  top_n(n = 10, wt = avg_log2FC)
+
+# Print summary to console
+print(top10 %>% select(cluster, gene, avg_log2FC, p_val_adj) %>% head(30))
+
+##--------------------------------------------------------------
+## 2.. Visualize Top DEGs Across Clusters
+##--------------------------------------------------------------
+
+# DotPlot for top 10 genes per cluster
+dotplot_deg <- DotPlot(obj, features = unique(top10$gene)) +
+  theme(axis.text.x = element_text(angle = 90, hjust = 1)) +
+  ggtitle("Top 10 DEGs per Cluster (Unbiased)")
+
+ggsave("DotPlot_Top10_DEGs_perCluster.png", plot = dotplot_deg, width = 12, height = 10)
+cat("✅ Dot plot saved: DotPlot_Top10_DEGs_perCluster.png\n")
+
+# Optionally, visualize a heatmap of top markers
+top20 <- obj.markers %>%
+  group_by(cluster) %>%
+  top_n(n = 20, wt = avg_log2FC)
+
+# Extract expression matrix for top genes
+heatmap_genes <- unique(top20$gene)
+DoHeatmap(obj, features = heatmap_genes, size = 3) + 
+  ggtitle("Heatmap: Top 20 DEGs per Cluster")
+
+##--------------------------------------------------------------
+## 3. Optional: Identify Broad Population Groups
+##--------------------------------------------------------------
+
+# You can assign cluster identities based on marker interpretation
+# Example:
+# new.cluster.ids <- c("Tumor", "T cells", "B cells", "Macrophages", "Fibroblasts", "Endothelial")
+# names(new.cluster.ids) <- levels(obj)
+# obj <- RenameIdents(obj, new.cluster.ids)
+# saveRDS(obj, "8-Annotated-object.RDS")
+
+##--------------------------------------------------------------
+## 8. Summary
+##--------------------------------------------------------------
+
+cat("✅ Analysis Complete!\n")
+cat("📊 Canonical marker-based and unbiased DEG-based cluster exploration done.\n")
+cat("📁 Key Outputs:\n")
+cat(" - 7-DEG_all_clusters.csv\n")
+cat(" - DotPlot_Top10_DEGs_perCluster.png\n")
+cat(" - Heatmap of Top 20 DEGs\n")
+###############################################################
+# End of Script
+###############################################################
