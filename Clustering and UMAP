@@ -1,0 +1,109 @@
+###############################################################
+# 📘 Single-cell RNA-seq Dimensionality Reduction & Clustering
+# Author: Deeksha Sharma
+# Purpose: Perform PCA, UMAP, clustering, and marker identification
+###############################################################
+
+##--------------------------------------------------------------
+## 1. Load Required Libraries
+##--------------------------------------------------------------
+
+# Core and visualization
+library(dplyr)
+library(tidyverse)
+library(ggplot2)
+library(ggrepel)
+library(patchwork)
+library(ggpubr)
+
+# Seurat workflow
+library(Seurat)
+library(SeuratObject)
+
+# Optional downstream tools
+library(Nebulosa)
+library(monocle3)
+library(CellChat)
+
+# For parallel computing if needed
+library(future)
+plan("multicore", workers = 4)  # Adjust based on your CPU cores
+
+##--------------------------------------------------------------
+## 2. Load SCTransformed Object
+##--------------------------------------------------------------
+
+# Load from previous step
+obj <- readRDS(file = "3-SCtransform-object.RDS")
+cat("✅ SCTransformed object loaded successfully.\n")
+
+# Check metadata integrity
+head(obj@meta.data)
+cat("Number of cells:", ncol(obj), "\n")
+
+##--------------------------------------------------------------
+## 3. Dimensionality Reduction (PCA)
+##--------------------------------------------------------------
+
+cat("⚙️ Running PCA...\n")
+
+# Run PCA
+obj <- RunPCA(obj, verbose = TRUE)
+
+# Visualize PCA results
+ElbowPlot(obj, ndims = 50) +
+  ggtitle("Elbow Plot for Principal Components")
+
+# Save PCA results
+saveRDS(obj, file = "4-PCA-object.RDS")
+
+##--------------------------------------------------------------
+## 4. Determine Optimal Dimensions
+##--------------------------------------------------------------
+# You can inspect the elbow plot manually to select PCs.
+# Typically, use the point before variance starts to plateau (e.g., 1–20 PCs).
+
+dims_to_use <- 1:20  # Adjust after reviewing ElbowPlot
+
+cat("Using dimensions:", paste(dims_to_use, collapse = ", "), "\n")
+
+##--------------------------------------------------------------
+## 5. Clustering
+##--------------------------------------------------------------
+
+cat("🧩 Running neighborhood graph and clustering...\n")
+
+obj <- FindNeighbors(obj, dims = dims_to_use)
+obj <- FindClusters(obj, resolution = 0.5)  # Adjust resolution as needed or try different resolution 
+
+#and compare all umpas for over and underclustering 
+
+cat("✅ Clustering complete.\n")
+table(obj$seurat_clusters)
+
+# Save object after clustering
+saveRDS(obj, file = "5-Clustered-object.RDS")
+
+##--------------------------------------------------------------
+## 6. UMAP Visualization
+##--------------------------------------------------------------
+
+cat("🌌 Running UMAP for visualization...\n")
+
+obj <- RunUMAP(obj, dims = dims_to_use, verbose = TRUE)
+
+# Save UMAP-processed object
+saveRDS(obj, file = "6-UMAP-object.RDS")
+
+# Visualize UMAP by cluster, treatment, and cell line
+p1 <- DimPlot(obj, reduction = "umap", label = TRUE, repel = TRUE) + 
+  ggtitle("Clusters (UMAP)") + theme_minimal()
+
+p2 <- DimPlot(obj, reduction = "umap", group.by = "treatment") +
+  ggtitle("UMAP by Treatment")
+
+p3 <- DimPlot(obj, reduction = "umap", group.by = "cell_line") +
+  ggtitle("UMAP by Cell Line")
+
+# Combine visualizations
+p1 + p2 + p3
