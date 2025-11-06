@@ -1,0 +1,236 @@
+###############################################################
+# 📘 Single-cell RNA-seq DEG Exploration and pathway enrichment
+# Author: Deeksha Sharma
+# Purpose:  perform differential
+# expression, visualize top markers, and explore pathway enrichment.
+###############################################################
+
+##--------------------------------------------------------------
+## 1. Load Required Libraries
+##--------------------------------------------------------------
+
+# Core analysis & visualization
+library(Seurat)
+library(SeuratObject)
+library(dplyr)
+library(tidyverse)
+library(ggplot2)
+library(ggrepel)
+library(patchwork)
+library(ggpubr)
+library(cowplot)
+library(pheatmap)
+
+# Optional downstream analysis
+library(Nebulosa)
+library(monocle3)
+library(CellChat)
+library(clusterProfiler)
+library(org.Mm.eg.db)
+library(fgsea)
+library(openxlsx)
+
+##--------------------------------------------------------------
+## 2. Load Object & Inspect Metadata
+##--------------------------------------------------------------
+
+obj <- readRDS("8-Annotated-object.RDS")
+cat("✅ Object loaded with", ncol(obj), "cells across", length(unique(Idents(obj))), "clusters.\n")
+
+# Basic UMAP overview
+DimPlot(obj, reduction = "umap", label = FALSE, pt.size = 0.2) + theme(legend.position = "right")
+
+# Split views
+DimPlot(obj, reduction = "umap", split.by = "treatment") + theme(legend.position = "right")
+DimPlot(obj, reduction = "umap", split.by = "cell.line") + theme(legend.position = "right")
+DimPlot(obj, reduction = "umap", split.by = "cell_line_treatment") + theme(legend.position = "right")
+
+head(obj@meta.data)
+
+##--------------------------------------------------------------
+## 3. Subset for Vehicle-Treated Samples
+##--------------------------------------------------------------
+
+vehicle_cells <- subset(obj, subset = cell_line_treatment %in% c("D2A1_Vehicle", "PYMT_Vehicle"))
+Idents(vehicle_cells) <- "cell_line_treatment"
+
+cat("Vehicle cell distribution:\n")
+print(table(Idents(vehicle_cells)))
+
+##--------------------------------------------------------------
+## 4. Differential Expression: PYMT vs D2A1 (Vehicle)
+##--------------------------------------------------------------
+
+diff_expr_obj <- FindMarkers(
+  vehicle_cells,
+  ident.1 = "PYMT_Vehicle",
+  ident.2 = "D2A1_Vehicle",
+  logfc.threshold = 0,
+  test.use = "wilcox"
+)
+
+##Note same DEG could be done for any other condition just need to change the ident
+
+# Label genes
+diff_expr_obj$Gene <- rownames(diff_expr_obj)
+
+# Summary
+up_genes <- subset(diff_expr_obj, avg_log2FC > 0 & p_val_adj < 0.05)
+down_genes <- subset(diff_expr_obj, avg_log2FC < 0 & p_val_adj < 0.05)
+cat("🔺 Upregulated in PYMT:", nrow(up_genes), "\n🔵 Downregulated in PYMT:", nrow(down_genes), "\n")
+
+##--------------------------------------------------------------
+## 5. Export DE Results to Excel
+##--------------------------------------------------------------
+
+wb <- createWorkbook()
+addWorksheet(wb, "All DE Genes")
+addWorksheet(wb, "Upregulated")
+addWorksheet(wb, "Downregulated")
+addWorksheet(wb, "Upregulated Significant")
+addWorksheet(wb, "Downregulated Significant")
+
+writeData(wb, "All DE Genes", diff_expr_obj)
+writeData(wb, "Upregulated", subset(diff_expr_obj, avg_log2FC > 0))
+writeData(wb, "Downregulated", subset(diff_expr_obj, avg_log2FC < 0))
+writeData(wb, "Upregulated Significant", up_genes)
+writeData(wb, "Downregulated Significant", down_genes)
+
+saveWorkbook(wb, "Differential_Expression_Results_INTEGRATED.xlsx", overwrite = TRUE)
+cat("✅ Results saved: Differential_Expression_Results_INTEGRATED.xlsx\n")
+
+##--------------------------------------------------------------
+## 6. Volcano Plot: PYMT vs D2A1
+##--------------------------------------------------------------
+
+diff_expr_obj <- diff_expr_obj[order(diff_expr_obj$p_val_adj), ]
+top10_up <- head(subset(diff_expr_obj, avg_log2FC > 0), 10)
+top10_down <- head(subset(diff_expr_obj, avg_log2FC < 0), 10)
+top20_genes <- rbind(top10_up, top10_down)
+top20_gene_names <- rownames(top20_genes)
+
+volcano_df <- data.frame(
+  Gene = rownames(diff_expr_obj),
+  logFC = diff_expr_obj$avg_log2FC,
+  negLogP = -log10(diff_expr_obj$p_val_adj + 1e-300)
+)
+volcano_df$label <- ifelse(volcano_df$Gene %in% top20_gene_names, volcano_df$Gene, "")
+volcano_df$color <- "grey"
+volcano_df$color[volcano_df$Gene %in% rownames(top10_up)] <- "red"
+volcano_df$color[volcano_df$Gene %in% rownames(top10_down)] <- "blue"
+
+ggplot(volcano_df, aes(x = logFC, y = negLogP)) +
+  geom_point(aes(color = color), alpha = 0.6) +
+  scale_color_identity() +
+  geom_text_repel(aes(label = label), size = 3, max.overlaps = 20) +
+  geom_hline(yintercept = -log10(0.05), linetype = "dashed") +
+  theme_minimal() +
+  labs(title = "Volcano Plot: PYMT vs D2A1 (Vehicle Cells)",
+       x = "avg_log2FC (PYMT vs D2A1)", y = "-log10(adj. p-value)")
+
+##--------------------------------------------------------------
+## 7. Heatmap: Top 20 Up & Down Genes
+##--------------------------------------------------------------
+
+# Top 20 Down (D2A1-enriched)
+downregulated_genes <- diff_expr_obj[diff_expr_obj$avg_log2FC < 0, ]
+top20_down <- head(downregulated_genes[order(downregulated_genes$avg_log2FC), ], 20)
+down_genes_to_plot <- rownames(top20_down)
+
+vehicle_cells <- ScaleData(vehicle_cells, features = down_genes_to_plot)
+scaled_expr_down <- GetAssayData(vehicle_cells, slot = "scale.data")[down_genes_to_plot, ]
+grouping <- vehicle_cells$orig.ident
+names(grouping) <- colnames(vehicle_cells)
+
+avg_expr_down <- sapply(unique(grouping), function(id) {
+  rowMeans(scaled_expr_down[, names(grouping[grouping == id]), drop = FALSE])
+})
+
+pheatmap(avg_expr_down, cluster_rows = TRUE, cluster_cols = FALSE,
+         main = "Top 20 D2A1-enriched Genes (Vehicle Samples)",
+         fontsize_row = 10)
+
+# Top 20 Up (PYMT-enriched)
+upregulated_genes <- diff_expr_obj[diff_expr_obj$avg_log2FC > 0, ]
+top20_up <- head(upregulated_genes[order(upregulated_genes$avg_log2FC, decreasing = TRUE), ], 20)
+up_genes_to_plot <- rownames(top20_up)
+
+vehicle_cells <- ScaleData(vehicle_cells, features = up_genes_to_plot)
+scaled_expr_up <- GetAssayData(vehicle_cells, slot = "scale.data")[up_genes_to_plot, ]
+
+avg_expr_up <- sapply(unique(grouping), function(id) {
+  rowMeans(scaled_expr_up[, names(grouping[grouping == id]), drop = FALSE])
+})
+
+pheatmap(avg_expr_up, cluster_rows = TRUE, cluster_cols = FALSE,
+         main = "Top 20 PYMT-enriched Genes (Vehicle Samples)",
+         fontsize_row = 10)
+
+##--------------------------------------------------------------
+## 8. GO & KEGG Pathway Enrichment
+##--------------------------------------------------------------
+
+pymt_entrez <- bitr(rownames(up_genes), fromType="SYMBOL", toType="ENTREZID", OrgDb="org.Mm.eg.db")
+d2a1_entrez <- bitr(rownames(down_genes), fromType="SYMBOL", toType="ENTREZID", OrgDb="org.Mm.eg.db")
+
+# GO Biological Process
+go_py <- enrichGO(gene = pymt_entrez$ENTREZID, OrgDb = org.Mm.eg.db, ont = "BP", readable = TRUE)
+go_d2 <- enrichGO(gene = d2a1_entrez$ENTREZID, OrgDb = org.Mm.eg.db, ont = "BP", readable = TRUE)
+
+dotplot(go_py, showCategory = 20, title = "GO BP: PYMT-enriched") + theme_bw()
+dotplot(go_d2, showCategory = 20, title = "GO BP: D2A1-enriched") + theme_bw()
+
+# KEGG Enrichment
+kegg_py <- enrichKEGG(gene = pymt_entrez$ENTREZID, organism = "mmu")
+kegg_d2 <- enrichKEGG(gene = d2a1_entrez$ENTREZID, organism = "mmu")
+
+dotplot(kegg_py, showCategory = 15, title = "KEGG Pathways: PYMT") + theme_bw()
+dotplot(kegg_d2, showCategory = 15, title = "KEGG Pathways: D2A1") + theme_bw()
+
+##--------------------------------------------------------------
+## 9. Hallmark Pathway Enrichment (fgsea)
+##--------------------------------------------------------------
+
+vehicle_cells <- subset(obj, subset = cell_line_treatment %in% c("PYMT_Vehicle", "D2A1_Vehicle"))
+Idents(vehicle_cells) <- "cell.line"
+
+diff_expr_obj <- FindMarkers(vehicle_cells,
+                             ident.1 = "PYMT",
+                             ident.2 = "D2A1",
+                             test.use = "wilcox",
+                             logfc.threshold = 0.25,
+                             min.pct = 0.1)
+
+diff_expr_obj$gene <- rownames(diff_expr_obj)
+
+up_genes <- diff_expr_obj %>% filter(avg_log2FC > 0 & p_val_adj < 0.05) %>% pull(gene)
+down_genes <- diff_expr_obj %>% filter(avg_log2FC < 0 & p_val_adj < 0.05) %>% pull(gene)
+
+hallmark_pathways <- gmtPathways("mh.all.v2025.1.Mm.symbols.gmt")
+
+term2gene <- bind_rows(lapply(names(hallmark_pathways), \(pw) data.frame(term = pw, gene = hallmark_pathways[[pw]])))
+
+up_enrichment <- enricher(up_genes, TERM2GENE = term2gene)
+down_enrichment <- enricher(down_genes, TERM2GENE = term2gene)
+
+up_df <- as.data.frame(up_enrichment@result) %>% mutate(Direction = "PYMT Up")
+down_df <- as.data.frame(down_enrichment@result) %>% mutate(Direction = "D2A1 Up")
+combined_df <- bind_rows(up_df, down_df)
+
+top_combined <- combined_df %>%
+  group_by(Direction) %>%
+  slice_min(order_by = p.adjust, n = 10)
+
+ggplot(top_combined, aes(x = reorder(Description, -log10(p.adjust)), y = -log10(p.adjust), fill = Direction)) +
+  geom_bar(stat = "identity", position = "dodge") +
+  coord_flip() +
+  theme_minimal() +
+  scale_fill_manual(values = c("PYMT Up"="#E64B35", "D2A1 Up"="#4DBBD5")) +
+  labs(title="Hallmark Pathway Enrichment (Vehicle Samples)",
+       x="Pathway", y="-log10(adj. p-value)") +
+  theme(panel.border = element_rect(color="black", fill=NA))
+
+cat("✅ DEG and pathway enrichment analysis complete.\n")
+###############################################################
+# End of Script
+###############################################################
