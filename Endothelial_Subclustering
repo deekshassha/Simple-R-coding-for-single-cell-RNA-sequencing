@@ -230,3 +230,108 @@ pheatmap(
 # gsea_res <- fgsea::fgsea(pathways = my_pathways, stats = gene_list_sorted, nperm = 1000)
 
 cat("✅ Script finished. Next: run DEG (FindMarkers) for contrasts of interest and use clusterProfiler/fgsea for enrichment.\n")
+
+## Module Scores analyis
+# Inspect metadata
+head(Endothelial@meta.data)
+colnames(Endothelial@meta.data)  # confirm existing module scores, cluster IDs, etc.
+
+# =========================================
+# 3. Define Gene Sets for Module Scoring
+# =========================================
+
+# 3a. Collagen formation genes
+collagen_genes_mouse <- c(
+  "Col6a1", "Col21a1", "Lamc2", "Loxl3", "Lamb3", "Colgalt2", "Plod2", "Adamts2", "Crtap",
+  "Col8a2", "Ctsb", "Ppib", "Pxdn", "Pcolce", "Col25a1", "Adamts3", "Col27a1", "Col11a1",
+  "P4ha3", "Col15a1", "Col19a1", "Col1a2", "P4ha1", "Col18a1", "Col2a1", "Plec", "Col5a1",
+  "Col4a3", "P4hb", "Plod3", "Adamts14", "Col10a1", "Col9a2", "Itgb4", "Col4a2", "Col22a1",
+  "Col3a1", "Col6a3", "Col4a4", "Mmp13", "Mmp9", "Lama3", "Col8a1", "Col17a1", "Col4a5",
+  "Leprel1", "Loxl1", "Col14a1", "Col4a1", "Pcolce2", "Serpinh1", "Plod1", "P4ha2", "Cd151",
+  "Ctsv", "Tll1", "Col20a1", "Dst", "Bmp1", "Lepre1", "Mmp3", "Col6a2", "Col9a3", "Lox",
+  "Col5a2", "Loxl4", "Col13a1", "Col12a1", "Ctss", "Col1a1", "Col23a1", "Col7a1", "Col4a6",
+  "Ctsl", "Colgalt1", "Col16a1", "Col5a3", "Col24a1", "Col6a5", "Mmp20", "Tll2", "Col28a1",
+  "Col11a2", "Col26a1", "Itga6", "Mmp7", "Loxl2", "Col6a6", "Leprel2", "Col9a1"
+)
+
+# 3b. Leukocyte adhesion genes
+leukocyte_adhesion_genes_mouse <- c(
+  "Icam1", "Icam2", "Vcam1", "Sele", "Selp", "Pecam1", "Madcam1"
+)
+
+# 3c. Angiogenesis genes (manually curated / literature-based)
+angiogenesis_genes_mouse <- c(
+  "Vegfa", "Vegfb", "Vegfc", "Flt1", "Kdr",
+  "Angpt1", "Angpt2", "Tek", "Fgf2", "Pdgfb",
+  "Pdgfrb", "Hif1a", "Mmp2", "Mmp9", "Tgfb1",
+  "Cdh5", "Cd34", "Pecam1", "Thbs1", "Cxcl12",
+  "Jag1", "Dll4", "Notch1", "Epcam", "Ptgs2",
+  "Nrp1"
+)
+
+# =========================================
+# 4. Add Module Scores to Seurat Object
+# =========================================
+
+# 4a. Collagen Formation
+collagen_use <- intersect(collagen_genes_mouse, rownames(Endothelial))
+Endothelial <- AddModuleScore(
+  Endothelial,
+  features = list(collagen_use),
+  name = "CollagenFormation"
+)
+
+# 4b. Leukocyte-Endothelial Adhesion
+leuko_use <- intersect(leukocyte_adhesion_genes_mouse, rownames(Endothelial))
+Endothelial <- AddModuleScore(
+  Endothelial,
+  features = list(leuko_use),
+  name = "LeukoAdhesion"
+)
+
+# 4c. Angiogenesis
+angio_use <- intersect(angiogenesis_genes_mouse, rownames(Endothelial))
+Endothelial <- AddModuleScore(
+  Endothelial,
+  features = list(angio_use),
+  name = "Angiogenesis"
+)
+
+# =========================================
+# 5. Visualization
+# =========================================
+
+# 5a. Feature plots (UMAP) for each module
+FeaturePlot(Endothelial, features = "CollagenFormation1", cols = c("blue", "white", "red"))
+FeaturePlot(Endothelial, features = "LeukoAdhesion1", cols = c("blue", "white", "red"))
+FeaturePlot(Endothelial, features = "Angiogenesis1", cols = c("blue", "white", "red"))
+
+# 5b. Violin plots by cluster or condition
+VlnPlot(Endothelial, features = "LeukoAdhesion1", group.by = "FinalIdent", pt.size = 0)
+VlnPlot(Endothelial, features = "Angiogenesis1", group.by = "cell.line", pt.size = 0)
+VlnPlot(Endothelial, features = "Angiogenesis1", group.by = "cell_line_treatment", pt.size = 0)
+
+# =========================================
+# End of script
+# =========================================
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
