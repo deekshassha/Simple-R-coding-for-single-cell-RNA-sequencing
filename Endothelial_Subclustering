@@ -316,7 +316,155 @@ VlnPlot(Endothelial, features = "Angiogenesis1", group.by = "cell_line_treatment
 # =========================================
 
 
+##Cell-cell interaction analysis between Endothelial subtypes and TME cells . First do it in untreated cells calaled (Vehicle) then use same code updating it to the treated condition called (ZBC260).
+##Cell chat analysis between TME and Endothelial subtypes
+# 1. Load the libraries
+library(dplyr)
+library(Seurat)
+library(patchwork)
+library(ggplot2)
+library(pheatmap)
+library(tidygraph)
+library(tibble)
+library(openxlsx)
+library(SeuratObject)
+library(devtools)
+library(enrichR)
+library(clusterProfiler)
+library(org.Mm.eg.db)
+library(writexl)
+library(tidyverse)
+library(stringr)
+library(BiocManager)
+library(glmGamPoi)
+library(cluster)
+library(parallel)
+library(DOSE)
+library(Nebulosa)
+library(future)
+library(ggrepel)
+library(ggpubr)
+library(CellChat)
+library(networkD3)
+library(reshape2)
 
+# 2. Subset cells where treatment is "Vehicle"
+vehicle_cells <- subset(merged_obj, subset = treatment == "Vehicle")
+
+# Check the subset
+vehicle_cells
+table(vehicle_cells$treatment)
+
+# Save the subset
+saveRDS(vehicle_cells, file = "endo_and_all_vehicle_cells_subset.rds")
+
+# 3. Load the merged Seurat object for Vehicle
+vehicle_obj <- readRDS("endo_and_all_vehicle_cells_subset.rds")
+str(vehicle_obj)
+head(vehicle_obj$meta.data)
+unique(vehicle_obj$FinalIdent)
+
+# 4. Clear memory and setup parallel workers
+gc()
+options(future.globals.maxSize = 16 * 1024^3)  # 16GB
+future::plan("multisession", workers = 4)
+parallel::detectCores()
+
+# 5. Create CellChat object for Vehicle
+cellchat <- createCellChat(object = vehicle_obj,
+                           group.by = "ident",
+                           assay = "SCT") 
+
+CellChatDB <- CellChatDB.mouse
+showDatabaseCategory(CellChatDB)
+CellChatDB.use <- CellChatDB
+cellchat@DB <- CellChatDB.use
+
+cellchat <- subsetData(cellchat)
+cellchat <- identifyOverExpressedGenes(cellchat)
+cellchat <- identifyOverExpressedInteractions(cellchat)
+
+# Replace zero values in PPI.mouse if needed
+sum(PPI.mouse == 0)
+PPI.mouse[PPI.mouse == 0] <- 1e-6
+
+# Filter rows/columns with excessive zeros
+row_zero_fraction <- rowSums(PPI.mouse == 0) / ncol(PPI.mouse)
+col_zero_fraction <- colSums(PPI.mouse == 0) / nrow(PPI.mouse)
+PPI.mouse <- PPI.mouse[row_zero_fraction < 0.5, col_zero_fraction < 0.5]
+
+cellchat <- smoothData(cellchat, PPI.mouse, method = "netSmooth")
+
+# Save CellChat object
+saveRDS(cellchat, file = "Endo_chat_with_all_integrated_vehicle.rds")
+
+# Compute communication probability
+cellchat <- computeCommunProb(cellchat, nboot = 5)
+saveRDS(cellchat, file = "Endo_chat_all_combined_prob_integrated_vehicle.rds")
+
+# Extract communication probability
+df.net <- subsetCommunication(cellchat, slot.name = "net", thresh = 0.001)
+write.xlsx(df.net, file = "Endo_Chat_Interactions_Vehicle.xlsx", asTable = TRUE)
+
+# Aggregate network and visualize
+cellchat <- aggregateNet(cellchat)
+groupSize <- as.numeric(table(cellchat@idents))
+par(mfrow = c(1,2), xpd=TRUE)
+netVisual_circle(cellchat@net$count, vertex.weight = groupSize, weight.scale = TRUE,
+                 label.edge=FALSE, title.name = "Number of interactions")
+netVisual_circle(cellchat@net$weight, vertex.weight = groupSize, weight.scale = TRUE,
+                 label.edge=FALSE, title.name = "Interaction weights/strength")
+
+# Bubble plots for all interactions
+p <- netVisual_bubble(cellchat,
+                      sources.use = 1:12,
+                      targets.use = 1:12,
+                      remove.isolate = FALSE)
+p + coord_flip()
+
+# Interaction heatmaps
+selected_sources <- c(1:9)
+selected_targets <- c(10:13)
+sub_data <- cellchat@net$weight[selected_sources, selected_targets]
+pheatmap(sub_data, color = colorRampPalette(c("blue", "white", "red"))(100),
+         cluster_rows = FALSE, cluster_cols = FALSE,
+         display_numbers = TRUE, main = "Vehicle Interaction Strengths",
+         labels_row = rownames(sub_data), labels_col = colnames(sub_data),
+         fontsize_row = 12, fontsize_col = 12)
+
+# Top 20 ligand-receptor interactions
+top_ligands <- names(sort(apply(cellchat@net$prob, 3, sum), decreasing = TRUE)[1:20])
+df_ligands <- cellchat@net$prob[, , top_ligands] %>%
+  as.data.frame() %>%
+  tibble::rownames_to_column("Sender") %>%
+  pivot_longer(cols = -Sender, names_to = "Receiver", values_to = "Interaction")
+df_ligands_clean <- df_ligands %>% filter(!is.na(Interaction))
+ggplot(df_ligands_clean, aes(x = Sender, y = Receiver, size = Interaction, color = Interaction)) +
+  geom_point() +
+  scale_color_gradient(low = "blue", high = "red") +
+  theme_minimal() +
+  labs(title = "Top 20 Ligand-Receptor Interactions (Vehicle)") +
+  theme(axis.text.x = element_text(angle = 45, hjust = 1)) +
+  coord_flip()
+
+# Sankey plot for top interactions
+top_5_pathways <- df_ligands_clean %>% group_by(Sender) %>% slice_max(order_by = Interaction, n = 20) %>% ungroup()
+links <- data.frame(source = top_5_pathways$Sender,
+                    target = top_5_pathways$Receiver,
+                    value = top_5_pathways$Interaction)
+nodes <- data.frame(name = unique(c(links$source, links$target)))
+links$source <- match(links$source, nodes$name) - 1
+links$target <- match(links$target, nodes$name) - 1
+sankey <- sankeyNetwork(Links = links, Nodes = nodes, Source = "source",
+                        Target = "target", Value = "value", NodeID = "name",
+                        fontSize = 15, nodeWidth = 20)
+sankey
+
+# Bubble plots for selected sources and targets
+sources.use <- c(1,2,3,4,5,6,7,8,9)
+targets.use <- c(10,11,12,13)
+p <- netVisual_bubble(cellchat, sources.use = sources.use, targets.use = targets.use, remove.isolate = FALSE)
+p + coord_flip()
 
 
 
